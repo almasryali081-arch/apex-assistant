@@ -22,6 +22,8 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -35,6 +37,10 @@ public class MainActivity extends Activity {
     private static final int REQ_MIC = 1;
     private static final String PREFS = "apex";
     private static final String KEY_API = "api_key";
+    private static final String KEY_PROVIDER = "provider";
+    private static final String KEY_GEMINI = "gemini_key";
+    private static final String KEY_GEMINI_MODEL = "gemini_model";
+    private static final String DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
     private static final String SYSTEM =
             "You are Apex, a concise and friendly voice assistant. "
             + "Reply briefly in the same language the user speaks (Arabic or English). "
@@ -82,7 +88,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        if (prefs.getString(KEY_API, "").isEmpty()) {
+        if (activeKey().isEmpty()) {
             appendLog("مرحباً، اضغط ⚙ وأضف مفتاح Claude API لتبدأ.");
         }
     }
@@ -188,18 +194,65 @@ public class MainActivity extends Activity {
 
     // ---------- Settings ----------
 
-    private void showSettings() {
+    private boolean useGemini() {
+        return "gemini".equals(prefs.getString(KEY_PROVIDER, "claude"));
+    }
+
+    private String activeKey() {
+        return prefs.getString(useGemini() ? KEY_GEMINI : KEY_API, "").trim();
+    }
+
+    private EditText keyField(String hint, String value) {
         EditText e = new EditText(this);
-        e.setHint("sk-ant-...");
+        e.setHint(hint);
+        e.setSingleLine(true);
         e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        e.setText(prefs.getString(KEY_API, ""));
+        e.setText(value);
+        return e;
+    }
+
+    private void showSettings() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int p = dp(20);
+        box.setPadding(p, dp(8), p, 0);
+
+        RadioGroup group = new RadioGroup(this);
+        RadioButton rbClaude = new RadioButton(this);
+        rbClaude.setText("Claude");
+        rbClaude.setId(View.generateViewId());
+        RadioButton rbGemini = new RadioButton(this);
+        rbGemini.setText("Gemini (طبقة مجانية)");
+        rbGemini.setId(View.generateViewId());
+        group.addView(rbClaude);
+        group.addView(rbGemini);
+        group.check(useGemini() ? rbGemini.getId() : rbClaude.getId());
+        box.addView(group);
+
+        EditText claudeKey = keyField("مفتاح Claude: sk-ant-...", prefs.getString(KEY_API, ""));
+        EditText geminiKey = keyField("مفتاح Gemini", prefs.getString(KEY_GEMINI, ""));
+        EditText geminiModel = new EditText(this);
+        geminiModel.setHint("اسم نموذج Gemini");
+        geminiModel.setSingleLine(true);
+        geminiModel.setText(prefs.getString(KEY_GEMINI_MODEL, DEFAULT_GEMINI_MODEL));
+        box.addView(claudeKey);
+        box.addView(geminiKey);
+        box.addView(geminiModel);
 
         new AlertDialog.Builder(this)
-                .setTitle("مفتاح Claude API")
-                .setMessage("يُحفظ المفتاح على هذا الهاتف فقط.")
-                .setView(e)
-                .setPositiveButton("حفظ", (d, w) ->
-                        prefs.edit().putString(KEY_API, e.getText().toString().trim()).apply())
+                .setTitle("الإعدادات")
+                .setMessage("تُحفظ المفاتيح على هذا الهاتف فقط.")
+                .setView(box)
+                .setPositiveButton("حفظ", (d, w) -> {
+                    String model = geminiModel.getText().toString().trim();
+                    prefs.edit()
+                            .putString(KEY_PROVIDER,
+                                    group.getCheckedRadioButtonId() == rbGemini.getId() ? "gemini" : "claude")
+                            .putString(KEY_API, claudeKey.getText().toString().trim())
+                            .putString(KEY_GEMINI, geminiKey.getText().toString().trim())
+                            .putString(KEY_GEMINI_MODEL, model.isEmpty() ? DEFAULT_GEMINI_MODEL : model)
+                            .apply();
+                })
                 .setNegativeButton("إلغاء", null)
                 .show();
     }
@@ -278,21 +331,25 @@ public class MainActivity extends Activity {
         }
         appendLog("أنت: " + text);
 
-        String apiKey = prefs.getString(KEY_API, "").trim();
+        String apiKey = activeKey();
         if (apiKey.isEmpty()) {
-            String msg = "أضف مفتاح Claude API من زر ⚙ أولاً.";
+            String msg = "أضف مفتاح API من زر ⚙ أولاً.";
             appendLog("Apex: " + msg);
             speak(msg);
             return;
         }
 
         setMode(OrbView.THINKING, "Apex يفكر...");
+        final boolean gemini = useGemini();
+        final String model = prefs.getString(KEY_GEMINI_MODEL, DEFAULT_GEMINI_MODEL);
         List<String[]> snapshot = new ArrayList<>(history);
         snapshot.add(new String[]{"user", text});
 
         new Thread(() -> {
             try {
-                String reply = ClaudeClient.ask(apiKey, SYSTEM, snapshot);
+                String reply = gemini
+                        ? GeminiClient.ask(apiKey, model, SYSTEM, snapshot)
+                        : ClaudeClient.ask(apiKey, SYSTEM, snapshot);
                 main.post(() -> {
                     history.add(new String[]{"user", text});
                     history.add(new String[]{"assistant", reply});
